@@ -16,6 +16,7 @@ import android.widget.TextView
 import androidx.core.graphics.toColorInt
 import androidx.core.view.doOnAttach
 import androidx.core.view.isVisible
+import io.github.proify.android.extensions.crc32
 import io.github.proify.android.extensions.dp
 import io.github.proify.android.extensions.isLandScape
 import io.github.proify.android.extensions.setColorAlpha
@@ -67,6 +68,7 @@ class StatusBarViewController(
     private var lastHighlightView: View? = null
     private var colorMonitorView: View? = null
     private var coverColorPaletteResult: ColorPaletteResult? = null
+    private var coverColorRequestVersion: Long = 0
     private var systemStatusBarColor: SystemStatusBarColor? = null
 
     private val colorChangeListener = object : OnColorChangeListener {
@@ -200,18 +202,42 @@ class StatusBarViewController(
 
     fun updateCoverThemeColors(coverFile: File?) {
         coverColorPaletteResult = null
+        val requestVersion = ++coverColorRequestVersion
+
+        if (coverFile == null) {
+            systemStatusBarColor?.let { updateStatusColor(it) }
+            return
+        }
+
+        var bitmap = coverFile.toBitmap()
+        if (bitmap == null) {
+            systemStatusBarColor?.let { updateStatusColor(it) }
+            return
+        }
+
         try {
-            val bitmap = coverFile?.toBitmap() ?: return
+            // cover.png 会被每首歌反复覆盖，不能用固定文件名作为缓存键。
+            // 使用文件内容 CRC，使同一封面仍可命中缓存，而新封面会重新取色。
+            val signature = coverFile.crc32().toString()
+            val extractionBitmap = bitmap
             ColorExtractor.extractAsync(
-                bitmap = bitmap,
-                cacheKey = {
-                    coverFile.name
-                }) {
-                coverColorPaletteResult = it
-                systemStatusBarColor?.let { updateStatusColor(it) }
-                bitmap.recycle()
+                bitmap = extractionBitmap,
+                cacheKey = { signature }
+            ) { result ->
+                try {
+                    // 异步取色可能乱序完成，只允许最新一次封面请求更新 UI。
+                    if (requestVersion != coverColorRequestVersion) return@extractAsync
+
+                    coverColorPaletteResult = result
+                    systemStatusBarColor?.let { updateStatusColor(it) }
+                } finally {
+                    if (!extractionBitmap.isRecycled) extractionBitmap.recycle()
+                }
             }
+            bitmap = null
         } catch (e: Exception) {
+            bitmap?.let { if (!it.isRecycled) it.recycle() }
+            systemStatusBarColor?.let { updateStatusColor(it) }
             YLog.error(TAG, "Failed to extract cover theme colors", e)
         }
     }
@@ -220,7 +246,7 @@ class StatusBarViewController(
      * 处理视图注入逻辑：根据 BasicStyle 寻找锚点并插入歌词视图
      */
     private fun updateLocation(baseStyle: BasicStyle) {
-        val anchor = baseStyle.anchor
+        val anchor = basicStyle.anchor
         val anchorId = context.resources.getIdentifier(anchor, "id", context.packageName)
         val anchorView = statusBarView.findViewById<View>(anchorId) ?: return run {
             YLog.error(TAG, "Lyric anchor view $anchor not found")
