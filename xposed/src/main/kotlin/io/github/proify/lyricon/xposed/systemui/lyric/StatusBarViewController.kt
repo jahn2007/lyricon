@@ -204,24 +204,19 @@ class StatusBarViewController(
         coverColorPaletteResult = null
         val requestVersion = ++coverColorRequestVersion
 
-        if (coverFile == null) {
-            systemStatusBarColor?.let { updateStatusColor(it) }
-            return
-        }
+        // 新封面开始取色时先撤销上一张封面的配色，避免异步计算期间短暂显示旧颜色。
+        systemStatusBarColor?.let { updateStatusColor(it) }
 
-        var bitmap = coverFile.toBitmap()
-        if (bitmap == null) {
-            systemStatusBarColor?.let { updateStatusColor(it) }
-            return
-        }
+        if (coverFile == null) return
+
+        val bitmap = coverFile.toBitmap() ?: return
 
         try {
             // cover.png 会被每首歌反复覆盖，不能用固定文件名作为缓存键。
             // 使用文件内容 CRC，使同一封面仍可命中缓存，而新封面会重新取色。
             val signature = coverFile.crc32().toString()
-            val extractionBitmap = bitmap
             ColorExtractor.extractAsync(
-                bitmap = extractionBitmap,
+                bitmap = bitmap,
                 cacheKey = { signature }
             ) { result ->
                 try {
@@ -231,13 +226,11 @@ class StatusBarViewController(
                     coverColorPaletteResult = result
                     systemStatusBarColor?.let { updateStatusColor(it) }
                 } finally {
-                    if (!extractionBitmap.isRecycled) extractionBitmap.recycle()
+                    if (!bitmap.isRecycled) bitmap.recycle()
                 }
             }
-            bitmap = null
         } catch (e: Exception) {
-            bitmap?.let { if (!it.isRecycled) it.recycle() }
-            systemStatusBarColor?.let { updateStatusColor(it) }
+            if (!bitmap.isRecycled) bitmap.recycle()
             YLog.error(TAG, "Failed to extract cover theme colors", e)
         }
     }
@@ -246,7 +239,7 @@ class StatusBarViewController(
      * 处理视图注入逻辑：根据 BasicStyle 寻找锚点并插入歌词视图
      */
     private fun updateLocation(baseStyle: BasicStyle) {
-        val anchor = basicStyle.anchor
+        val anchor = baseStyle.anchor
         val anchorId = context.resources.getIdentifier(anchor, "id", context.packageName)
         val anchorView = statusBarView.findViewById<View>(anchorId) ?: return run {
             YLog.error(TAG, "Lyric anchor view $anchor not found")
